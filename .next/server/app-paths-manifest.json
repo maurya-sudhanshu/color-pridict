@@ -1,0 +1,9 @@
+{
+  "/api/support/chat/route": "app/api/support/chat/route.js",
+  "/api/support/route": "app/api/support/route.js",
+  "/api/auth/me/route": "app/api/auth/me/route.js",
+  "/api/game/bet/route": "app/api/game/bet/route.js",
+  "/api/game/round/route": "app/api/game/round/route.js",
+  "/support/page": "app/support/page.js",
+  "/game/page": "app/game/page.js"
+}

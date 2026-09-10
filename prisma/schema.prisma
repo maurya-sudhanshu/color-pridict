@@ -1,0 +1,261 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String        @id @default(uuid())
+  email        String        @unique
+  phone        String?       @unique
+  passwordHash String
+  role         String        @default("USER") // USER | ADMIN | SUB_ADMIN
+  isBlocked    Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  wallet              Wallet?
+  deposits            Deposit[]
+  withdrawals         Withdrawal[]
+  bankAccounts        BankAccount[]
+  bets                Bet[]
+  transactions        Transaction[]
+  auditLogs           AuditLog[]
+  adminPermission     AdminPermission?
+  supportTickets      SupportTicket[]
+  supportChatMessages SupportChatMessage[]
+  sessions            UserSession[]
+
+  @@map("users")
+}
+
+model UserSession {
+  id           String    @id @default(uuid())
+  userId       String
+  sessionToken String    @unique
+  ipAddress    String?
+  userAgent    String?
+  isActive     Boolean   @default(true)
+  loginAt      DateTime  @default(now())
+  logoutAt     DateTime?
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deposits     Deposit[]
+  withdrawals  Withdrawal[]
+  bets         Bet[]
+  transactions Transaction[]
+
+  @@map("user_sessions")
+}
+
+model AdminPermission {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  canCreate Boolean  @default(false)
+  canView   Boolean  @default(true)
+  canUpdate Boolean  @default(false)
+  canDelete Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("admin_permissions")
+}
+
+model Wallet {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  balance   Float    @default(0.0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("wallets")
+}
+
+model Deposit {
+  id            String   @id @default(uuid())
+  userId        String
+  sessionId     String?
+  amount        Float
+  txId          String
+  screenshotUrl String?
+  status        String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  rejectReason  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session UserSession? @relation(fields: [sessionId], references: [id])
+
+  @@map("deposits")
+}
+
+model BankAccount {
+  id            String   @id @default(uuid())
+  userId        String
+  bankName      String
+  accountNumber String
+  ifscCode      String
+  holderName    String
+  isVerified    Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  withdrawals Withdrawal[]
+
+  @@map("bank_accounts")
+}
+
+model Withdrawal {
+  id            String   @id @default(uuid())
+  userId        String
+  sessionId     String?
+  bankAccountId String
+  amount        Float
+  status        String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  rejectReason  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session     UserSession? @relation(fields: [sessionId], references: [id])
+  bankAccount BankAccount  @relation(fields: [bankAccountId], references: [id])
+
+  @@map("withdrawals")
+}
+
+model GameRound {
+  id              String      @id @default(uuid())
+  category        String      @default("3min") // 30s | 1min | 3min
+  roundNumber     Int
+  sessionIndex    Int         @default(1)
+  day             Int         @default(1)
+  dayOfWeek       String      @default("Wednesday")
+  dayOfWeekNumber Int         @default(3)
+  weekOfYear      Int         @default(36)
+  month           Int         @default(9)
+  monthName       String      @default("September")
+  year            Int         @default(2026)
+  startsAt        DateTime
+  closesAt        DateTime
+  status          String      @default("ACTIVE") // ACTIVE | CLOSED | COMPLETED
+  resultId        String?     @unique
+  createdAt       DateTime    @default(now())
+
+  result GameResult?
+  bets   Bet[]
+
+  @@unique([category, roundNumber])
+  @@map("game_rounds")
+}
+
+model GameResult {
+  id              String    @id @default(uuid())
+  roundId         String    @unique
+  number          Int // 0 to 9
+  color           String // RED | GREEN | VIOLET
+  sessionIndex    Int       @default(1)
+  day             Int       @default(1)
+  dayOfWeek       String    @default("Wednesday")
+  dayOfWeekNumber Int       @default(3)
+  weekOfYear      Int       @default(36)
+  month           Int       @default(9)
+  monthName       String    @default("September")
+  year            Int       @default(2026)
+  generatedAt     DateTime  @default(now())
+
+  round GameRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
+
+  @@map("game_results")
+}
+
+model Bet {
+  id               String   @id @default(uuid())
+  userId           String
+  sessionId        String?
+  roundId          String
+  betType          String // NUMBER | COLOR
+  selection        String // "0"-"9" or "RED", "GREEN", "VIOLET"
+  amount           Float
+  payoutMultiplier Float    @default(1.0)
+  status           String   @default("PENDING") // PENDING | WON | LOST
+  payoutAmount     Float    @default(0.0)
+  createdAt        DateTime @default(now())
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session UserSession? @relation(fields: [sessionId], references: [id])
+  round   GameRound    @relation(fields: [roundId], references: [id], onDelete: Cascade)
+
+  @@map("bets")
+}
+
+model Transaction {
+  id           String   @id @default(uuid())
+  userId       String
+  sessionId    String?
+  type         String // DEPOSIT | WITHDRAWAL | BET_PLACED | BET_WON
+  amount       Float
+  balanceAfter Float
+  referenceId  String?
+  createdAt    DateTime @default(now())
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session UserSession? @relation(fields: [sessionId], references: [id])
+
+  @@map("transactions")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  adminId   String
+  action    String
+  details   String
+  createdAt DateTime @default(now())
+
+  admin User @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@map("audit_logs")
+}
+
+model SupportTicket {
+  id         String   @id @default(uuid())
+  userId     String
+  subject    String
+  message    String   @db.Text
+  status     String   @default("OPEN") // OPEN | RESOLVED
+  adminReply String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("support_tickets")
+}
+
+model SupportChatMessage {
+  id        String   @id @default(uuid())
+  userId    String
+  sender    String // USER | ADMIN
+  message   String   @db.Text
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("support_chat_messages")
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
