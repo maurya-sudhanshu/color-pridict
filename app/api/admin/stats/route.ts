@@ -6,32 +6,71 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
-    await requireAdmin(req);
+    await requireAdmin(req, "VIEW");
 
-    const totalUsers = await prisma.user.count({ where: { role: "USER" } });
-    const pendingDepositsCount = await prisma.deposit.count({ where: { status: "PENDING" } });
-    const pendingWithdrawalsCount = await prisma.withdrawal.count({ where: { status: "PENDING" } });
-    const totalBetsCount = await prisma.bet.count();
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const trendStart = new Date(today);
+    trendStart.setUTCDate(trendStart.getUTCDate() - 6);
 
-    const approvedDepositsSum = await prisma.deposit.aggregate({
-      where: { status: "APPROVED" },
-      _sum: { amount: true },
-    });
-
-    const approvedWithdrawalsSum = await prisma.withdrawal.aggregate({
-      where: { status: "APPROVED" },
-      _sum: { amount: true },
-    });
-
-    // Compute Total Bets Revenue vs Total User Winnings Payouts
-    const betsRevenueSum = await prisma.bet.aggregate({
-      _sum: { amount: true },
-    });
-
-    const userPayoutsSum = await prisma.bet.aggregate({
-      where: { status: "WON" },
-      _sum: { payoutAmount: true },
-    });
+    const [
+      totalUsers,
+      pendingDepositsCount,
+      pendingWithdrawalsCount,
+      totalBetsCount,
+      approvedDepositsSum,
+      approvedWithdrawalsSum,
+      betsRevenueSum,
+      userPayoutsSum,
+      activeRound,
+      activeSessionsCount,
+      todayDeposits,
+      todayWithdrawals,
+      roundsSettledToday,
+      todayBets,
+      todayPayouts,
+      recentActivity,
+      depositTrend,
+      withdrawalTrend,
+    ] = await Promise.all([
+      prisma.user.count({ where: { role: "USER" } }),
+      prisma.deposit.count({ where: { status: "PENDING" } }),
+      prisma.withdrawal.count({ where: { status: "PENDING" } }),
+      prisma.bet.count(),
+      prisma.deposit.aggregate({ where: { status: "APPROVED" }, _sum: { amount: true } }),
+      prisma.withdrawal.aggregate({ where: { status: "APPROVED" }, _sum: { amount: true } }),
+      prisma.bet.aggregate({ _sum: { amount: true } }),
+      prisma.bet.aggregate({ where: { status: "WON" }, _sum: { payoutAmount: true } }),
+      prisma.gameRound.findFirst({ where: { status: "ACTIVE" }, orderBy: { roundNumber: "desc" } }),
+      prisma.userSession.count({ where: { isActive: true } }),
+      prisma.deposit.aggregate({
+        where: { createdAt: { gte: today }, status: "APPROVED" },
+        _sum: { amount: true },
+      }),
+      prisma.withdrawal.aggregate({
+        where: { createdAt: { gte: today }, status: "APPROVED" },
+        _sum: { amount: true },
+      }),
+      prisma.gameResult.count({ where: { generatedAt: { gte: today } } }),
+      prisma.bet.aggregate({ where: { createdAt: { gte: today } }, _sum: { amount: true } }),
+      prisma.bet.aggregate({
+        where: { createdAt: { gte: today }, status: "WON" },
+        _sum: { payoutAmount: true },
+      }),
+      prisma.auditLog.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 6,
+        include: { admin: { select: { email: true } } },
+      }),
+      prisma.deposit.findMany({
+        where: { createdAt: { gte: trendStart }, status: "APPROVED" },
+        select: { amount: true, createdAt: true },
+      }),
+      prisma.withdrawal.findMany({
+        where: { createdAt: { gte: trendStart }, status: "APPROVED" },
+        select: { amount: true, createdAt: true },
+      }),
+    ]);
 
     const totalBetsAmount = betsRevenueSum._sum.amount || 0.0;
     const totalUserPayouts = userPayoutsSum._sum.payoutAmount || 0.0;
@@ -42,10 +81,19 @@ export async function GET(req: NextRequest) {
     const totalWithdrawalsAmount = approvedWithdrawalsSum._sum.amount || 0.0;
     const netCashflow = totalDepositsAmount - totalWithdrawalsAmount;
 
-    const activeRound = await prisma.gameRound.findFirst({
-      where: { status: "ACTIVE" },
-      orderBy: { roundNumber: "desc" },
-    });
+    const dailyAmounts = (items: { amount: number; createdAt: Date }[]) =>
+      Array.from({ length: 7 }, (_, index) => {
+        const date = new Date(trendStart);
+        date.setUTCDate(date.getUTCDate() + index);
+        const nextDate = new Date(date);
+        nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+        return {
+          date: date.toISOString().slice(0, 10),
+          amount: items
+            .filter((item) => item.createdAt >= date && item.createdAt < nextDate)
+            .reduce((sum, item) => sum + item.amount, 0),
+        };
+      });
 
     return NextResponse.json({
       stats: {
@@ -61,6 +109,14 @@ export async function GET(req: NextRequest) {
         houseNetProfit,
         profitMargin,
         activeRoundNumber: activeRound?.roundNumber || 0,
+        activeSessionsCount,
+        todayDepositAmount: todayDeposits._sum.amount || 0,
+        todayWithdrawalAmount: todayWithdrawals._sum.amount || 0,
+        roundsSettledToday,
+        todayHouseNetProfit: (todayBets._sum.amount || 0) - (todayPayouts._sum.payoutAmount || 0),
+        recentActivity,
+        depositTrend: dailyAmounts(depositTrend),
+        withdrawalTrend: dailyAmounts(withdrawalTrend),
       },
     });
   } catch (error: any) {

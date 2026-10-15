@@ -6,24 +6,7 @@ const prisma = new PrismaClient();
 async function main() {
   console.log("Seeding database...");
 
-  // 1. Admin User
-  const adminPassword = await bcrypt.hash("admin123", 10);
-  const admin = await prisma.user.upsert({
-    where: { email: "admin@colorwin.com" },
-    update: {},
-    create: {
-      email: "admin@colorwin.com",
-      phone: "9999999999",
-      passwordHash: adminPassword,
-      role: "ADMIN",
-      wallet: {
-        create: { balance: 100000.0 },
-      },
-    },
-  });
-  console.log("Admin account created:", admin.email);
-
-  // 2. Demo User
+  // Seed a regular demo account; administrator promotion is a manual database operation.
   const userPassword = await bcrypt.hash("user123", 10);
   const user = await prisma.user.upsert({
     where: { email: "demo@colorwin.com" },
@@ -40,7 +23,7 @@ async function main() {
   });
   console.log("Demo user account created:", user.email);
 
-  // 3. Initial Game Round
+  // Initial Game Round
   const existingRound = await prisma.gameRound.findFirst({
     where: { status: "ACTIVE" },
   });

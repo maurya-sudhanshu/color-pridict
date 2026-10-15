@@ -9,7 +9,6 @@ const registerSchema = z.object({
   email: z.string().email(),
   phone: z.string().min(10).optional(),
   password: z.string().min(6),
-  role: z.enum(["USER", "ADMIN"]).optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -40,7 +39,7 @@ export async function POST(req: NextRequest) {
         email: parsed.email,
         phone: parsed.phone,
         passwordHash,
-        role: parsed.role || "USER",
+        role: "USER",
         wallet: {
           create: {
             balance: 500.0,

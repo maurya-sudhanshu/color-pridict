@@ -47,6 +47,15 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
 }
 
 
+// Validate ../../app/access-denied/page.tsx
+{
+  type __IsExpected<Specific extends AppPageConfig<"/access-denied">> = Specific
+  const handler = {} as typeof import("../../app/access-denied/page.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/admin/dashboard/page.tsx
 {
   type __IsExpected<Specific extends AppPageConfig<"/admin/dashboard">> = Specific
@@ -320,6 +329,15 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
 
 
 
+
+// Validate ../../app/admin/layout.tsx
+{
+  type __IsExpected<Specific extends LayoutConfig<"/admin">> = Specific
+  const handler = {} as typeof import("../../app/admin/layout.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
 
 // Validate ../../app/layout.tsx
 {

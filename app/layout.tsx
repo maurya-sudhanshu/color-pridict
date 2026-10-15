@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import Navbar from "@/components/Navbar";
-import Footer from "@/components/Footer";
-import LiveChatWidget from "@/components/LiveChatWidget";
+import SiteFrame from "@/components/SiteFrame";
 import { ThemeProvider } from "@/lib/theme-context";
 
 const geistSans = Geist({
@@ -32,14 +30,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-between selection:bg-purple-500 selection:text-white`}
       >
         <ThemeProvider>
-          <div>
-            <Navbar />
-            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
-              {children}
-            </main>
-          </div>
-          <Footer />
-          <LiveChatWidget />
+          <SiteFrame>{children}</SiteFrame>
         </ThemeProvider>
       </body>
     </html>

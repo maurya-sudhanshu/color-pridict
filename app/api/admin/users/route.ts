@@ -17,6 +17,11 @@ const toggleBlockSchema = z.object({
   isBlocked: z.boolean(),
 });
 
+const updateRoleSchema = z.object({
+  userId: z.string(),
+  role: z.enum(["USER", "ADMIN"]),
+});
+
 export async function GET(req: NextRequest) {
   try {
     await requireAdmin(req, "VIEW");
@@ -126,6 +131,66 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ success: true, user: updatedUser });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || "Failed to toggle block status" }, { status: 400 });
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const admin = await requireAdmin(req, "UPDATE");
+    if (admin.role === "SUB_ADMIN") {
+      return NextResponse.json({ error: "Only a full administrator can change administrator roles" }, { status: 403 });
+    }
+
+    const parsed = updateRoleSchema.parse(await req.json());
+    const targetUser = await prisma.user.findUnique({
+      where: { id: parsed.userId },
+      select: { id: true, email: true, role: true },
+    });
+
+    if (!targetUser) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+
+    if (targetUser.role === "SUPER_ADMIN" || targetUser.role === "SUB_ADMIN") {
+      return NextResponse.json({ error: "Sub-admin and super-admin roles must be managed in their dedicated controls" }, { status: 400 });
+    }
+
+    if (targetUser.role === parsed.role) {
+      return NextResponse.json({ error: "User already has this role" }, { status: 400 });
+    }
+
+    if (targetUser.id === admin.id && parsed.role === "USER") {
+      return NextResponse.json({ error: "You cannot demote your own account" }, { status: 400 });
+    }
+
+    if (parsed.role === "USER") {
+      const administratorCount = await prisma.user.count({
+        where: { role: { in: ["ADMIN", "SUPER_ADMIN"] } },
+      });
+      if (administratorCount <= 1) {
+        return NextResponse.json({ error: "The last administrator cannot be demoted" }, { status: 400 });
+      }
+    }
+
+    const updatedUser = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.update({
+        where: { id: targetUser.id },
+        data: { role: parsed.role },
+        select: { id: true, email: true, role: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          adminId: admin.id,
+          action: parsed.role === "ADMIN" ? "PROMOTE_USER_TO_ADMIN" : "DEMOTE_ADMIN_TO_USER",
+          details: `Changed ${targetUser.email} role from ${targetUser.role} to ${parsed.role}`,
+        },
+      });
+      return user;
+    });
+
+    return NextResponse.json({ success: true, user: updatedUser });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message || "Failed to update user role" }, { status: 400 });
   }
 }
 

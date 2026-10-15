@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
-    const admin = await requireAdmin(req);
+    const admin = await requireAdmin(req, "UPDATE");
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
 
