@@ -61,6 +61,9 @@ export async function POST(req: NextRequest) {
 
     const res = NextResponse.json({
       success: true,
+      redirectTo: ["ADMIN", "SUPER_ADMIN", "SUB_ADMIN"].includes(user.role)
+        ? "/admin/dashboard"
+        : "/game",
       user: {
         id: user.id,
         email: user.email,

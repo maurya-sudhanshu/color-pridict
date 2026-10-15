@@ -1,4 +1,4 @@
-import { requireAuth } from "@/lib/auth";
+import { requireRole } from "@/lib/auth";
 import { CATEGORY_CONFIG, GameCategory, getCurrentOrNewRound } from "@/lib/game-engine";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
@@ -15,7 +15,7 @@ const betSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const user = await requireAuth(req);
+    const user = await requireRole(req, "user");
     const body = await req.json();
     const parsed = betSchema.parse(body);
     const category: GameCategory = parsed.category || "3min";
@@ -103,7 +103,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
-    const user = await requireAuth(req);
+    const user = await requireRole(req, "user");
     const { searchParams } = new URL(req.url);
     const categoryParam = searchParams.get("category");
     const sessionFilter = searchParams.get("session");

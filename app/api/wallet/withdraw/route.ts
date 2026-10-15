@@ -1,4 +1,4 @@
-import { requireAuth } from "@/lib/auth";
+import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -19,7 +19,7 @@ const cancelWithdrawSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const user = await requireAuth(req);
+    const user = await requireRole(req, "user");
     const body = await req.json();
     const parsed = withdrawSchema.parse(body);
 
@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
  */
 export async function PUT(req: NextRequest) {
   try {
-    const user = await requireAuth(req);
+    const user = await requireRole(req, "user");
     const body = await req.json();
     const parsed = cancelWithdrawSchema.parse(body);
 
@@ -165,7 +165,7 @@ export async function PUT(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
-    const user = await requireAuth(req);
+    const user = await requireRole(req, "user");
 
     const withdrawals = await prisma.withdrawal.findMany({
       where: { userId: user.id },

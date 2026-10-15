@@ -28,7 +28,7 @@ export default function LoginPage() {
       if (!res.ok) {
         setError(data.error || "Login failed");
       } else {
-        window.location.href = "/game";
+        window.location.href = data.redirectTo;
       }
     } catch (err: any) {
       setError(err.message || "An error occurred");

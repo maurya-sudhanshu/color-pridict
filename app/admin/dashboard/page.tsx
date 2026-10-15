@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import { Shield, Users, ArrowDownLeft, ArrowUpRight, Play, Check, X, RefreshCw, FileText, Wallet, Sparkles, Sliders, Dices, Award, Zap, Clock, Trophy, Target, Search, TrendingUp, TrendingDown, DollarSign, QrCode, CreditCard, Save, Upload, Image as ImageIcon, UserPlus, Key, Trash2, CheckCircle, Lock, Ban, Unlock, MessageSquare, Headphones, CheckSquare, CornerDownRight, Send, MessageCircle, Monitor, Globe, Radio } from "lucide-react";
+import AdminDashboardFrame, { AdminSection } from "@/components/AdminDashboardFrame";
 
 interface AdminStats {
   totalUsers: number;
@@ -16,7 +17,17 @@ interface AdminStats {
   houseNetProfit: number;
   profitMargin: number;
   activeRoundNumber: number;
+  activeSessionsCount: number;
+  todayDepositAmount: number;
+  todayWithdrawalAmount: number;
+  todayHouseNetProfit: number;
+  roundsSettledToday: number;
+  recentActivity: AuditLogItem[];
+  depositTrend: { date: string; amount: number }[];
+  withdrawalTrend: { date: string; amount: number }[];
 }
+
+type ToastState = { message: string; tone: "success" | "error" };
 
 interface DepositItem {
   id: string;
@@ -118,7 +129,7 @@ interface ChatMessage {
 
 export default function AdminDashboard() {
   const [stats, setStats] = useState<AdminStats | null>(null);
-  const [tab, setTab] = useState<"deposits" | "withdrawals" | "users" | "subadmins" | "support" | "sessions" | "logs" | "settings">("deposits");
+  const [tab, setTab] = useState<AdminSection>("dashboard");
 
   const [deposits, setDeposits] = useState<DepositItem[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalItem[]>([]);
@@ -127,7 +138,12 @@ export default function AdminDashboard() {
   const [tickets, setTickets] = useState<SupportTicketItem[]>([]);
   const [sessions, setSessions] = useState<UserSessionItem[]>([]);
   const [logs, setLogs] = useState<AuditLogItem[]>([]);
-  const [userSearchQuery, setUserSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [sortBy, setSortBy] = useState<"date" | "amount" | "email">("date");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [loadingData, setLoadingData] = useState(true);
 
   // Live Chat Messenger Admin state
   const [supportSubTab, setSupportSubTab] = useState<"chat" | "tickets">("chat");
@@ -161,13 +177,32 @@ export default function AdminDashboard() {
   const [uploadingQr, setUploadingQr] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const showToast = (message: string, tone: ToastState["tone"] = "success") => {
+    setToast({ message, tone });
+    window.setTimeout(() => setToast(null), 4500);
+  };
+
+  const requestConfirmation = (message: string) =>
+    new Promise<boolean>((resolve) => {
+      confirmationResolver.current = resolve;
+      setConfirmMessage(message);
+    });
+
+  const resolveConfirmation = (confirmed: boolean) => {
+    confirmationResolver.current?.(confirmed);
+    confirmationResolver.current = null;
+    setConfirmMessage(null);
+  };
+
   // Category & Result Strategy state
   const [adminCategory, setAdminCategory] = useState<"30s" | "1min" | "3min">("3min");
   const [selectedStrategy, setSelectedStrategy] = useState<"FAIR_RNG" | "LOWEST_WINNING_PAYOUT" | "MAX_HOUSE_PROFIT">("LOWEST_WINNING_PAYOUT");
   const [manualOutcomeOverride, setManualOutcomeOverride] = useState<number | null>(null);
   const [simData, setSimData] = useState<{ roundNumber: number; totalBetsAmount: number; simulation: SimulationRow[] } | null>(null);
 
-  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [confirmMessage, setConfirmMessage] = useState<string | null>(null);
+  const confirmationResolver = useRef<((confirmed: boolean) => void) | null>(null);
 
   // Balance adjustment modal state
   const [selectedUser, setSelectedUser] = useState<UserItem | null>(null);
@@ -317,17 +352,19 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => {
-    fetchStats();
-    fetchDeposits();
-    fetchWithdrawals();
-    fetchUsers();
-    fetchSubAdmins();
-    fetchTickets();
-    fetchSessions();
-    fetchAdminChatData();
-    fetchLogs();
-    fetchSettings();
-    fetchSimData(adminCategory);
+    Promise.all([
+      fetchStats(),
+      fetchDeposits(),
+      fetchWithdrawals(),
+      fetchUsers(),
+      fetchSubAdmins(),
+      fetchTickets(),
+      fetchSessions(),
+      fetchAdminChatData(),
+      fetchLogs(),
+      fetchSettings(),
+      fetchSimData(adminCategory),
+    ]).finally(() => setLoadingData(false));
   }, []);
 
   useEffect(() => {
@@ -350,6 +387,7 @@ export default function AdminDashboard() {
   }, [activeMessages]);
 
   const handleAdvanceRound = async () => {
+    if (!(await requestConfirmation(`Force advance and settle the active ${adminCategory} round${manualOutcomeOverride !== null ? ` with number ${manualOutcomeOverride}` : ""}?`))) return;
     try {
       const res = await fetch("/api/admin/round/advance", {
         method: "POST",
@@ -364,20 +402,21 @@ export default function AdminDashboard() {
       const data = await res.json();
       if (res.ok) {
         const overrideText = manualOutcomeOverride !== null ? `Forced Number ${manualOutcomeOverride}` : `Strategy ${selectedStrategy}`;
-        setActionMsg(`Advanced ${adminCategory} round successfully using ${overrideText}!`);
+        showToast(`Advanced ${adminCategory} round successfully using ${overrideText}.`);
         setManualOutcomeOverride(null);
         fetchStats();
         fetchSimData(adminCategory);
         fetchLogs();
       } else {
-        alert(data.error || "Failed to advance round");
+        showToast(data.error || "Failed to advance round", "error");
       }
     } catch (e: any) {
-      alert(e.message || "Error");
+      showToast(e.message || "Error advancing round", "error");
     }
   };
 
   const handleDepositAction = async (depositId: string, status: "APPROVED" | "REJECTED") => {
+    if (!(await requestConfirmation(`Confirm ${status.toLowerCase()} for deposit ${depositId}?`))) return;
     try {
       const res = await fetch("/api/admin/deposits", {
         method: "POST",
@@ -389,16 +428,19 @@ export default function AdminDashboard() {
         fetchStats();
         fetchUsers();
         fetchLogs();
+        showToast(`Deposit ${status.toLowerCase()} successfully.`);
       } else {
         const data = await res.json();
-        alert(data.error || "Action failed");
+        showToast(data.error || "Deposit action failed", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Deposit action failed", "error");
     }
   };
 
   const handleWithdrawalAction = async (withdrawalId: string, status: "APPROVED" | "REJECTED") => {
+    const consequence = status === "REJECTED" ? " The held funds will be refunded to the user's wallet." : "";
+    if (!(await requestConfirmation(`Confirm ${status.toLowerCase()} for withdrawal ${withdrawalId}?${consequence}`))) return;
     try {
       const res = await fetch("/api/admin/withdrawals", {
         method: "POST",
@@ -410,12 +452,13 @@ export default function AdminDashboard() {
         fetchStats();
         fetchUsers();
         fetchLogs();
+        showToast(`Withdrawal ${status.toLowerCase()} successfully.`);
       } else {
         const data = await res.json();
-        alert(data.error || "Action failed");
+        showToast(data.error || "Withdrawal action failed", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Withdrawal action failed", "error");
     }
   };
 
@@ -441,18 +484,19 @@ export default function AdminDashboard() {
         fetchUsers();
         fetchStats();
         fetchLogs();
+        showToast("User balance adjusted successfully.");
       } else {
         const data = await res.json();
-        alert(data.error || "Adjustment failed");
+        showToast(data.error || "Balance adjustment failed", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Balance adjustment failed", "error");
     }
   };
 
   const handleToggleBlockUser = async (userId: string, currentIsBlocked: boolean) => {
     const actionName = currentIsBlocked ? "unblock" : "block";
-    if (!confirm(`Are you sure you want to ${actionName} this user account?`)) return;
+    if (!(await requestConfirmation(`Are you sure you want to ${actionName} this user account?`))) return;
 
     try {
       const res = await fetch("/api/admin/users", {
@@ -466,31 +510,55 @@ export default function AdminDashboard() {
 
       const data = await res.json();
       if (res.ok) {
-        setActionMsg(`User account successfully ${currentIsBlocked ? "unblocked" : "blocked"}!`);
+        showToast(`User account successfully ${currentIsBlocked ? "unblocked" : "blocked"}.`);
         fetchUsers();
         fetchLogs();
       } else {
-        alert(data.error || `Failed to ${actionName} user`);
+        showToast(data.error || `Failed to ${actionName} user`, "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || `Failed to ${actionName} user`, "error");
+    }
+  };
+
+  const handleUpdateUserRole = async (user: UserItem) => {
+    const nextRole = user.role === "USER" ? "ADMIN" : "USER";
+    if (!(await requestConfirmation(`${nextRole === "ADMIN" ? "Promote" : "Demote"} ${user.email} ${nextRole === "ADMIN" ? "to administrator" : "to a regular user"}?`))) return;
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id, role: nextRole }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || "Failed to update user role", "error");
+        return;
+      }
+      fetchUsers();
+      fetchStats();
+      fetchLogs();
+      showToast(`${user.email} is now ${nextRole === "ADMIN" ? "an administrator" : "a regular user"}.`);
+    } catch (error: any) {
+      showToast(error.message || "Failed to update user role", "error");
     }
   };
 
   const handleDeleteUser = async (userId: string) => {
-    if (!confirm("Are you sure you want to delete this user account?")) return;
+    if (!(await requestConfirmation("Are you sure you want to delete this user account? This action cannot be undone."))) return;
     try {
       const res = await fetch(`/api/admin/users?userId=${userId}`, { method: "DELETE" });
       if (res.ok) {
         fetchUsers();
         fetchStats();
         fetchLogs();
+        showToast("User account deleted.");
       } else {
         const data = await res.json();
-        alert(data.error || "Failed to delete user");
+        showToast(data.error || "Failed to delete user", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Failed to delete user", "error");
     }
   };
 
@@ -512,12 +580,13 @@ export default function AdminDashboard() {
       if (res.ok) {
         setAdminChatInput("");
         fetchAdminChatData(activeChatUserId);
+        showToast("Support reply sent.");
       } else {
         const data = await res.json();
-        alert(data.error || "Failed to send live reply");
+        showToast(data.error || "Failed to send live reply", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Failed to send live reply", "error");
     } finally {
       setSendingAdminChat(false);
     }
@@ -545,12 +614,12 @@ export default function AdminDashboard() {
         setAdminReplyText("");
         fetchTickets();
         fetchLogs();
-        setActionMsg("Support ticket response saved and marked as RESOLVED!");
+        showToast("Support ticket response saved and marked as resolved.");
       } else {
-        alert(data.error || "Failed to submit reply");
+        showToast(data.error || "Failed to submit reply", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Failed to submit reply", "error");
     } finally {
       setReplying(false);
     }
@@ -582,18 +651,19 @@ export default function AdminDashboard() {
         setCanDelete(false);
         fetchSubAdmins();
         fetchLogs();
-        setActionMsg(`Sub-Admin ${data.subAdmin.email} created successfully!`);
+        showToast(`Sub-Admin ${data.subAdmin.email} created successfully.`);
       } else {
-        alert(data.error || "Failed to create sub-admin");
+        showToast(data.error || "Failed to create sub-admin", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Failed to create sub-admin", "error");
     } finally {
       setCreatingSubAdmin(false);
     }
   };
 
   const handleUpdateSubAdminPermission = async (subAdminId: string, perm: { canCreate: boolean; canView: boolean; canUpdate: boolean; canDelete: boolean }) => {
+    if (!(await requestConfirmation(`Save updated permissions for sub-admin ${subAdminId}?`))) return;
     try {
       const res = await fetch("/api/admin/subadmins", {
         method: "PUT",
@@ -606,28 +676,30 @@ export default function AdminDashboard() {
       if (res.ok) {
         fetchSubAdmins();
         fetchLogs();
+        showToast("Sub-admin permissions updated.");
       } else {
         const data = await res.json();
-        alert(data.error || "Failed to update sub-admin permissions");
+        showToast(data.error || "Failed to update sub-admin permissions", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Failed to update sub-admin permissions", "error");
     }
   };
 
   const handleDeleteSubAdmin = async (subAdminId: string) => {
-    if (!confirm("Are you sure you want to delete this sub-admin account?")) return;
+    if (!(await requestConfirmation("Are you sure you want to delete this sub-admin account? This action cannot be undone."))) return;
     try {
       const res = await fetch(`/api/admin/subadmins?subAdminId=${subAdminId}`, { method: "DELETE" });
       if (res.ok) {
         fetchSubAdmins();
         fetchLogs();
+        showToast("Sub-admin account deleted.");
       } else {
         const data = await res.json();
-        alert(data.error || "Failed to delete sub-admin");
+        showToast(data.error || "Failed to delete sub-admin", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Failed to delete sub-admin", "error");
     }
   };
 
@@ -646,15 +718,15 @@ export default function AdminDashboard() {
         }),
       });
       if (res.ok) {
-        setActionMsg("Deposit UPI & QR Settings saved successfully!");
+        showToast("Deposit UPI and QR settings saved.");
         fetchSettings();
         fetchLogs();
       } else {
         const data = await res.json();
-        alert(data.error || "Failed to save settings");
+        showToast(data.error || "Failed to save settings", "error");
       }
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || "Failed to save settings", "error");
     } finally {
       setSavingSettings(false);
     }
@@ -677,22 +749,119 @@ export default function AdminDashboard() {
       const data = await res.json();
       if (res.ok && data.url) {
         setQrUrl(data.url);
-        setActionMsg("QR Code image uploaded successfully! Click Save Settings below to apply.");
+        showToast("QR image uploaded. Save settings to apply it.");
       } else {
-        alert(data.error || "Upload failed");
+        showToast(data.error || "Upload failed", "error");
       }
     } catch (err: any) {
-      alert(err.message || "File upload error");
+      showToast(err.message || "File upload error", "error");
     } finally {
       setUploadingQr(false);
     }
   };
 
-  const filteredUsers = users.filter(
-    (u) =>
-      u.email.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
-      (u.phone && u.phone.includes(userSearchQuery))
-  );
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const directionMultiplier = sortDirection === "asc" ? 1 : -1;
+  const filteredDeposits = deposits
+    .filter((deposit) =>
+      (statusFilter === "ALL" || deposit.status === statusFilter) &&
+      (!normalizedSearch ||
+        deposit.user.email.toLowerCase().includes(normalizedSearch) ||
+        deposit.txId.toLowerCase().includes(normalizedSearch))
+    )
+    .sort((left, right) => {
+      if (sortBy === "amount") return (left.amount - right.amount) * directionMultiplier;
+      if (sortBy === "email") return left.user.email.localeCompare(right.user.email) * directionMultiplier;
+      return (new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()) * directionMultiplier;
+    });
+  const filteredWithdrawals = withdrawals
+    .filter((withdrawal) =>
+      (statusFilter === "ALL" || withdrawal.status === statusFilter) &&
+      (!normalizedSearch ||
+        withdrawal.user.email.toLowerCase().includes(normalizedSearch) ||
+        withdrawal.bankAccount.accountNumber.toLowerCase().includes(normalizedSearch))
+    )
+    .sort((left, right) => {
+      if (sortBy === "amount") return (left.amount - right.amount) * directionMultiplier;
+      if (sortBy === "email") return left.user.email.localeCompare(right.user.email) * directionMultiplier;
+      return (new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()) * directionMultiplier;
+    });
+  const filteredUsers = users
+    .filter((user) =>
+      !normalizedSearch ||
+      user.email.toLowerCase().includes(normalizedSearch) ||
+      (user.phone && user.phone.includes(normalizedSearch))
+    )
+    .sort((left, right) => {
+      if (sortBy === "amount") return ((left.wallet?.balance || 0) - (right.wallet?.balance || 0)) * directionMultiplier;
+      if (sortBy === "email") return left.email.localeCompare(right.email) * directionMultiplier;
+      return (new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()) * directionMultiplier;
+    });
+  const pageSize = 10;
+  const depositsPage = filteredDeposits.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const withdrawalsPage = filteredWithdrawals.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const usersPage = filteredUsers.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [tab, statusFilter, searchQuery, sortBy, sortDirection]);
+
+  const refreshAll = async () => {
+    setLoadingData(true);
+    await Promise.all([
+      fetchStats(),
+      fetchDeposits(),
+      fetchWithdrawals(),
+      fetchUsers(),
+      fetchSubAdmins(),
+      fetchTickets(),
+      fetchSessions(),
+      fetchAdminChatData(activeChatUserId),
+      fetchLogs(),
+      fetchSettings(),
+      fetchSimData(adminCategory),
+    ]);
+    setLoadingData(false);
+  };
+
+  const toggleSort = (column: "date" | "amount" | "email") => {
+    if (sortBy === column) {
+      setSortDirection((value) => value === "asc" ? "desc" : "asc");
+    } else {
+      setSortBy(column);
+      setSortDirection(column === "date" ? "desc" : "asc");
+    }
+  };
+
+  const renderPagination = (totalItems: number) => {
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const firstItem = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+    const lastItem = Math.min(currentPage * pageSize, totalItems);
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 pt-4">
+        <span className="text-[10px] font-bold text-slate-500">Showing {firstItem}-{lastItem} of {totalItems}</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={currentPage <= 1}
+            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+            className="rounded-lg border border-slate-800 px-3 py-1.5 text-[10px] font-bold text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span className="text-[10px] font-bold text-slate-400">Page {currentPage} / {totalPages}</span>
+          <button
+            type="button"
+            disabled={currentPage >= totalPages}
+            onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+            className="rounded-lg border border-slate-800 px-3 py-1.5 text-[10px] font-bold text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   const houseProfit = stats?.houseNetProfit ?? 0;
   const netCashflow = stats?.netCashflow ?? 0;
@@ -708,105 +877,104 @@ export default function AdminDashboard() {
   const totalUnreadChatCount = chatConversations.reduce((sum, c) => sum + c.unreadCount, 0);
 
   const activeChatUser = users.find((u) => u.id === activeChatUserId);
+  const trendMaximum = Math.max(
+    1,
+    ...(stats?.depositTrend || []).map((item) => item.amount),
+    ...(stats?.withdrawalTrend || []).map((item) => item.amount)
+  );
 
   return (
-    <div className="space-y-8 pb-16">
-      {/* Header Banner */}
-      <div className="glass-panel border-purple-500/30 rounded-3xl p-6 sm:p-8 space-y-4 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5 text-center sm:text-left">
-          <div className="w-12 h-12 rounded-2xl bg-purple-600/20 border border-purple-500/40 flex items-center justify-center text-purple-300 shadow-glow-violet">
-            <Shield className="w-6 h-6 animate-pulse" />
+    <AdminDashboardFrame
+      activeSection={tab}
+      onSectionChange={(section) => setTab(section)}
+      searchQuery={searchQuery}
+      onSearchChange={setSearchQuery}
+      notificationCount={pendingDeposits + pendingWithdrawals}
+      onRefresh={refreshAll}
+    >
+      <div className="space-y-8 pb-16">
+      {tab === "dashboard" && (
+        <section className="space-y-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {loadingData
+              ? Array.from({ length: 6 }, (_, index) => <div key={index} className="h-32 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/70" />)
+              : [
+                  { label: "Total Users", value: totalUsers.toLocaleString(), hint: `${totalBetsCount.toLocaleString()} bets placed`, icon: Users, color: "text-indigo-300" },
+                  { label: "Active Sessions", value: (stats?.activeSessionsCount || 0).toLocaleString(), hint: "Currently online", icon: Monitor, color: "text-emerald-300" },
+                  { label: "Today's Deposits", value: `₹${(stats?.todayDepositAmount || 0).toFixed(2)}`, hint: "Approved today", icon: ArrowDownLeft, color: "text-emerald-300" },
+                  { label: "Today's Withdrawals", value: `₹${(stats?.todayWithdrawalAmount || 0).toFixed(2)}`, hint: "Approved today", icon: ArrowUpRight, color: "text-amber-300" },
+                  { label: "House Profit", value: `${(stats?.todayHouseNetProfit || 0) >= 0 ? "+" : ""}₹${(stats?.todayHouseNetProfit || 0).toFixed(2)}`, hint: `Gross today · margin ${profitMargin.toFixed(1)}% overall`, icon: DollarSign, color: (stats?.todayHouseNetProfit || 0) >= 0 ? "text-emerald-300" : "text-red-300" },
+                  { label: "Rounds Settled Today", value: (stats?.roundsSettledToday || 0).toLocaleString(), hint: `Active round #${stats?.activeRoundNumber || 0}`, icon: Trophy, color: "text-purple-300" },
+                ].map(({ label, value, hint, icon: Icon, color }) => (
+                  <article key={label} className="glass-panel rounded-2xl border-slate-800/80 p-5 shadow-xl">
+                    <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-slate-400">
+                      <span>{label}</span>
+                      <Icon className={`h-4 w-4 ${color}`} />
+                    </div>
+                    <div className={`mt-4 truncate font-mono text-2xl font-black ${color}`}>{value}</div>
+                    <p className="mt-1 text-[10px] font-semibold text-slate-500">{hint}</p>
+                  </article>
+                ))}
           </div>
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">Admin Executive Command Center</h1>
-            <p className="text-xs text-slate-400">P&L metrics, session-wise activity tracking, live support chat & RBAC</p>
+
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-5">
+            <article className="glass-panel rounded-2xl border-slate-800/80 p-5 xl:col-span-3">
+              <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-black text-white">Deposit & Withdrawal Trends</h2>
+                  <p className="mt-1 text-[10px] text-slate-500">Approved totals · last 7 days</p>
+                </div>
+                <div className="flex gap-4 text-[10px] font-bold">
+                  <span className="flex items-center gap-1.5 text-emerald-300"><i className="h-2 w-2 rounded-full bg-emerald-400" /> Deposits</span>
+                  <span className="flex items-center gap-1.5 text-purple-300"><i className="h-2 w-2 rounded-full bg-purple-400" /> Withdrawals</span>
+                </div>
+              </div>
+              <div className="flex h-40 items-end justify-between gap-2 border-b border-slate-800 pb-2">
+                {(stats?.depositTrend || []).map((deposit, index) => {
+                  const withdrawal = stats?.withdrawalTrend?.[index];
+                  return (
+                    <div key={deposit.date} className="relative flex h-full flex-1 items-end justify-center gap-1 pb-5">
+                      <div title={`Deposits ₹${deposit.amount.toFixed(2)}`} className="w-3 rounded-t bg-emerald-400/80 transition hover:bg-emerald-300" style={{ height: `${Math.max(4, (deposit.amount / trendMaximum) * 100)}%` }} />
+                      <div title={`Withdrawals ₹${(withdrawal?.amount || 0).toFixed(2)}`} className="w-3 rounded-t bg-purple-400/80 transition hover:bg-purple-300" style={{ height: `${Math.max(4, ((withdrawal?.amount || 0) / trendMaximum) * 100)}%` }} />
+                      <span className="absolute bottom-0 text-[8px] text-slate-500">{new Date(`${deposit.date}T00:00:00Z`).toLocaleDateString(undefined, { weekday: "short" })}</span>
+                    </div>
+                  );
+                })}
+                {!loadingData && !stats?.depositTrend?.length && (
+                  <p className="w-full self-center text-center text-xs text-slate-500">No trend data available yet.</p>
+                )}
+              </div>
+            </article>
+
+            <article className="glass-panel rounded-2xl border-slate-800/80 p-5 xl:col-span-2">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-black text-white">Recent Activity</h2>
+                  <p className="mt-1 text-[10px] text-slate-500">Latest administrator actions</p>
+                </div>
+                <button type="button" onClick={() => setTab("logs")} className="text-[10px] font-bold text-purple-300 hover:text-purple-200">View audit trail</button>
+              </div>
+              <div className="space-y-3">
+                {loadingData
+                  ? Array.from({ length: 4 }, (_, index) => <div key={index} className="h-10 animate-pulse rounded-xl bg-slate-900" />)
+                  : stats?.recentActivity?.map((activity) => (
+                      <div key={activity.id} className="flex gap-3 border-b border-slate-800/70 pb-3 last:border-0 last:pb-0">
+                        <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-purple-400 shadow-glow-violet" />
+                        <div className="min-w-0">
+                          <p className="truncate text-[11px] font-bold text-slate-200">{activity.action.replace(/_/g, " ")}</p>
+                          <p className="mt-0.5 truncate text-[10px] text-slate-500">{activity.admin.email} · {new Date(activity.createdAt).toLocaleString()}</p>
+                        </div>
+                      </div>
+                    ))}
+                {!loadingData && !stats?.recentActivity?.length && <p className="rounded-xl border border-dashed border-slate-800 p-5 text-center text-xs text-slate-500">No activity recorded yet.</p>}
+              </div>
+            </article>
           </div>
-        </div>
-
-        <button
-          onClick={() => {
-            fetchStats();
-            fetchDeposits();
-            fetchWithdrawals();
-            fetchUsers();
-            fetchSubAdmins();
-            fetchTickets();
-            fetchSessions();
-            fetchAdminChatData(activeChatUserId);
-            fetchLogs();
-            fetchSettings();
-            fetchSimData(adminCategory);
-          }}
-          className="px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 hover:text-white font-bold text-xs flex items-center gap-2 transition"
-        >
-          <RefreshCw className="w-4 h-4" /> Refresh All Data
-        </button>
-      </div>
-
-      {actionMsg && (
-        <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-black flex items-center justify-between shadow-glow-green">
-          <span>{actionMsg}</span>
-          <button onClick={() => setActionMsg(null)} className="text-slate-400 hover:text-white">✕</button>
-        </div>
+        </section>
       )}
 
-      {/* Financial P&L Executive Summary Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-        <div className="glass-panel border-slate-800/80 rounded-3xl p-5 space-y-2 shadow-xl">
-          <div className="flex items-center justify-between text-xs text-slate-400 font-bold">
-            <span>NET HOUSE PROFIT</span>
-            <DollarSign className="w-4 h-4 text-emerald-400" />
-          </div>
-          <div className={`text-2xl sm:text-3xl font-black font-mono ${houseProfit >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-            {houseProfit >= 0 ? "+" : ""}₹{houseProfit.toFixed(2)}
-          </div>
-          <div className="text-[10px] text-slate-500 font-bold">
-            Margin: {profitMargin.toFixed(1)}% | Bets: ₹{totalBetsAmount.toFixed(0)}
-          </div>
-        </div>
-
-        <div className="glass-panel border-slate-800/80 rounded-3xl p-5 space-y-2 shadow-xl">
-          <div className="flex items-center justify-between text-xs text-slate-400 font-bold">
-            <span>NET CASHFLOW</span>
-            <TrendingUp className="w-4 h-4 text-purple-400" />
-          </div>
-          <div className={`text-2xl sm:text-3xl font-black font-mono ${netCashflow >= 0 ? "text-purple-300" : "text-amber-400"}`}>
-            {netCashflow >= 0 ? "+" : ""}₹{netCashflow.toFixed(2)}
-          </div>
-          <div className="text-[10px] text-slate-500 font-bold">
-            In: ₹{totalDepositAmount.toFixed(0)} | Out: ₹{totalWithdrawalAmount.toFixed(0)}
-          </div>
-        </div>
-
-        <div className="glass-panel border-slate-800/80 rounded-3xl p-5 space-y-2 shadow-xl">
-          <div className="flex items-center justify-between text-xs text-slate-400 font-bold">
-            <span>PENDING QUEUE</span>
-            <Clock className="w-4 h-4 text-amber-400" />
-          </div>
-          <div className="text-2xl sm:text-3xl font-black font-mono text-amber-300">
-            {pendingDeposits + pendingWithdrawals}
-          </div>
-          <div className="text-[10px] text-slate-500 font-bold">
-            {pendingDeposits} Deposits | {pendingWithdrawals} Withdrawals
-          </div>
-        </div>
-
-        <div className="glass-panel border-slate-800/80 rounded-3xl p-5 space-y-2 shadow-xl">
-          <div className="flex items-center justify-between text-xs text-slate-400 font-bold">
-            <span>TOTAL PLAYERS</span>
-            <Users className="w-4 h-4 text-indigo-400" />
-          </div>
-          <div className="text-2xl sm:text-3xl font-black font-mono text-white">
-            {totalUsers}
-          </div>
-          <div className="text-[10px] text-slate-500 font-bold">
-            Total Bets Placed: {totalBetsCount}
-          </div>
-        </div>
-      </div>
-
       {/* Manual Round Control & Outcome Override Engine */}
-      <div className="glass-panel border-purple-500/40 rounded-3xl p-6 sm:p-8 space-y-6 shadow-2xl bg-slate-900/90">
+      {tab === "round" && <div className="glass-panel border-purple-500/40 rounded-3xl p-6 sm:p-8 space-y-6 shadow-2xl bg-slate-900/90">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
           <div>
             <h2 className="text-xl font-black text-white flex items-center gap-2">
@@ -934,109 +1102,42 @@ export default function AdminDashboard() {
             </div>
           </div>
         </div>
-      </div>
-
-      {/* Main Tabs Header */}
-      <div className="flex gap-2 border-b border-slate-800 pb-3 overflow-x-auto">
-        <button
-          onClick={() => setTab("deposits")}
-          className={`py-2.5 px-5 rounded-2xl font-bold text-xs sm:text-sm transition ${
-            tab === "deposits" ? "bg-purple-600 text-white shadow-glow-violet font-black" : "bg-slate-950 text-slate-400 hover:text-white"
-          }`}
-        >
-          💳 Deposit Requests ({deposits.filter((d) => d.status === "PENDING").length})
-        </button>
-
-        <button
-          onClick={() => setTab("withdrawals")}
-          className={`py-2.5 px-5 rounded-2xl font-bold text-xs sm:text-sm transition ${
-            tab === "withdrawals" ? "bg-purple-600 text-white shadow-glow-violet font-black" : "bg-slate-950 text-slate-400 hover:text-white"
-          }`}
-        >
-          🏦 Withdrawal Requests ({withdrawals.filter((w) => w.status === "PENDING").length})
-        </button>
-
-        <button
-          onClick={() => setTab("users")}
-          className={`py-2.5 px-5 rounded-2xl font-bold text-xs sm:text-sm transition ${
-            tab === "users" ? "bg-purple-600 text-white shadow-glow-violet font-black" : "bg-slate-950 text-slate-400 hover:text-white"
-          }`}
-        >
-          👥 User Directory ({users.length})
-        </button>
-
-        <button
-          onClick={() => setTab("subadmins")}
-          className={`py-2.5 px-5 rounded-2xl font-bold text-xs sm:text-sm transition ${
-            tab === "subadmins" ? "bg-purple-600 text-white shadow-glow-violet font-black" : "bg-slate-950 text-slate-400 hover:text-white"
-          }`}
-        >
-          🛡️ Sub-Admin RBAC ({subAdmins.length})
-        </button>
-
-        <button
-          onClick={() => setTab("sessions")}
-          className={`py-2.5 px-5 rounded-2xl font-bold text-xs sm:text-sm transition ${
-            tab === "sessions" ? "bg-purple-600 text-white shadow-glow-violet font-black" : "bg-slate-950 text-slate-400 hover:text-white"
-          }`}
-        >
-          📡 User Sessions ({sessions.filter((s) => s.isActive).length} Active)
-        </button>
-
-        <button
-          onClick={() => setTab("support")}
-          className={`py-2.5 px-5 rounded-2xl font-bold text-xs sm:text-sm transition relative ${
-            tab === "support" ? "bg-purple-600 text-white shadow-glow-violet font-black" : "bg-slate-950 text-slate-400 hover:text-white"
-          }`}
-        >
-          💬 Support & Live Chat ({pendingTicketsCount + totalUnreadChatCount})
-          {totalUnreadChatCount > 0 && (
-            <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-emerald-500 text-slate-950 font-mono text-[10px] font-black animate-pulse">
-              +{totalUnreadChatCount} Chat
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => setTab("logs")}
-          className={`py-2.5 px-5 rounded-2xl font-bold text-xs sm:text-sm transition ${
-            tab === "logs" ? "bg-purple-600 text-white shadow-glow-violet font-black" : "bg-slate-950 text-slate-400 hover:text-white"
-          }`}
-        >
-          📜 Audit Trail ({logs.length})
-        </button>
-
-        <button
-          onClick={() => setTab("settings")}
-          className={`py-2.5 px-5 rounded-2xl font-bold text-xs sm:text-sm transition ${
-            tab === "settings" ? "bg-purple-600 text-white shadow-glow-violet font-black" : "bg-slate-950 text-slate-400 hover:text-white"
-          }`}
-        >
-          ⚙️ Payment UPI & QR Settings
-        </button>
-      </div>
+      </div>}
 
       {/* TAB 1: DEPOSITS */}
       {tab === "deposits" && (
         <div className="glass-panel border-slate-800/90 rounded-3xl p-6 space-y-4 shadow-xl">
-          <h2 className="text-lg font-black text-white">Deposit Requests Management</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-black text-white">Deposit Requests Management</h2>
+              <p className="mt-1 text-[10px] text-slate-500">Review payment references and confirm each request.</p>
+            </div>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-200 outline-none focus:border-purple-500">
+              <option value="ALL">All statuses</option>
+              <option value="PENDING">Pending</option>
+              <option value="APPROVED">Approved</option>
+              <option value="REJECTED">Rejected</option>
+            </select>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs sm:text-sm">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 font-bold">
-                  <th className="pb-3 px-3">Date</th>
-                  <th className="pb-3 px-3">User Email</th>
-                  <th className="pb-3 px-3">Amount</th>
+                  <th className="pb-3 px-3"><button onClick={() => toggleSort("date")}>Date {sortBy === "date" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th>
+                  <th className="pb-3 px-3"><button onClick={() => toggleSort("email")}>User Email {sortBy === "email" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th>
+                  <th className="pb-3 px-3"><button onClick={() => toggleSort("amount")}>Amount {sortBy === "amount" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th>
                   <th className="pb-3 px-3">Tx ID / UTR</th>
                   <th className="pb-3 px-3">Status</th>
                   <th className="pb-3 px-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono">
-                {deposits.length === 0 ? (
-                  <tr><td colSpan={6} className="text-center py-6 text-slate-500">No deposit requests recorded yet.</td></tr>
+                {loadingData ? (
+                  Array.from({ length: 4 }, (_, index) => <tr key={index}><td colSpan={6} className="py-4"><div className="h-5 animate-pulse rounded bg-slate-800/70" /></td></tr>)
+                ) : depositsPage.length === 0 ? (
+                  <tr><td colSpan={6} className="py-12 text-center"><div className="mx-auto max-w-sm rounded-2xl border border-dashed border-slate-700 p-6"><p className="text-sm font-bold text-slate-300">No deposit requests found</p><p className="mt-1 text-xs text-slate-500">Try a different search or status filter.</p></div></td></tr>
                 ) : (
-                  deposits.map((d) => (
+                  depositsPage.map((d) => (
                     <tr key={d.id} className="hover:bg-slate-800/40">
                       <td className="py-3.5 px-3 text-slate-400 text-xs">{new Date(d.createdAt).toLocaleString()}</td>
                       <td className="py-3.5 px-3 text-white font-sans">{d.user?.email}</td>
@@ -1065,30 +1166,44 @@ export default function AdminDashboard() {
               </tbody>
             </table>
           </div>
+          {renderPagination(filteredDeposits.length)}
         </div>
       )}
 
       {/* TAB 2: WITHDRAWALS */}
       {tab === "withdrawals" && (
         <div className="glass-panel border-slate-800/90 rounded-3xl p-6 space-y-4 shadow-xl">
-          <h2 className="text-lg font-black text-white">Withdrawal Requests Management</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-black text-white">Withdrawal Requests Management</h2>
+              <p className="mt-1 text-[10px] text-slate-500">Validate payout details before processing.</p>
+            </div>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-200 outline-none focus:border-purple-500">
+              <option value="ALL">All statuses</option>
+              <option value="PENDING">Pending</option>
+              <option value="APPROVED">Approved</option>
+              <option value="REJECTED">Rejected</option>
+            </select>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs sm:text-sm">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 font-bold">
-                  <th className="pb-3 px-3">Date</th>
-                  <th className="pb-3 px-3">User Email</th>
-                  <th className="pb-3 px-3">Amount</th>
+                  <th className="pb-3 px-3"><button onClick={() => toggleSort("date")}>Date {sortBy === "date" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th>
+                  <th className="pb-3 px-3"><button onClick={() => toggleSort("email")}>User Email {sortBy === "email" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th>
+                  <th className="pb-3 px-3"><button onClick={() => toggleSort("amount")}>Amount {sortBy === "amount" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th>
                   <th className="pb-3 px-3">Bank Details</th>
                   <th className="pb-3 px-3">Status</th>
                   <th className="pb-3 px-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono">
-                {withdrawals.length === 0 ? (
-                  <tr><td colSpan={6} className="text-center py-6 text-slate-500">No withdrawal requests recorded yet.</td></tr>
+                {loadingData ? (
+                  Array.from({ length: 4 }, (_, index) => <tr key={index}><td colSpan={6} className="py-4"><div className="h-5 animate-pulse rounded bg-slate-800/70" /></td></tr>)
+                ) : withdrawalsPage.length === 0 ? (
+                  <tr><td colSpan={6} className="py-12 text-center"><div className="mx-auto max-w-sm rounded-2xl border border-dashed border-slate-700 p-6"><p className="text-sm font-bold text-slate-300">No withdrawal requests found</p><p className="mt-1 text-xs text-slate-500">Try a different search or status filter.</p></div></td></tr>
                 ) : (
-                  withdrawals.map((w) => (
+                  withdrawalsPage.map((w) => (
                     <tr key={w.id} className="hover:bg-slate-800/40">
                       <td className="py-3.5 px-3 text-slate-400 text-xs">{new Date(w.createdAt).toLocaleString()}</td>
                       <td className="py-3.5 px-3 text-white font-sans">{w.user?.email}</td>
@@ -1120,6 +1235,7 @@ export default function AdminDashboard() {
               </tbody>
             </table>
           </div>
+          {renderPagination(filteredWithdrawals.length)}
         </div>
       )}
 
@@ -1128,32 +1244,27 @@ export default function AdminDashboard() {
         <div className="glass-panel border-slate-800/90 rounded-3xl p-6 space-y-4 shadow-xl">
           <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
             <h2 className="text-lg font-black text-white">Registered Players Directory</h2>
-            <div className="relative w-full sm:w-64">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Search by email..."
-                value={userSearchQuery}
-                onChange={(e) => setUserSearchQuery(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500"
-              />
-            </div>
+            <p className="text-[10px] text-slate-500">Use the global search to find users by email or phone.</p>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs sm:text-sm">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 font-bold">
-                  <th className="pb-3 px-3">Email</th>
+                  <th className="pb-3 px-3"><button onClick={() => toggleSort("email")}>Email {sortBy === "email" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th>
                   <th className="pb-3 px-3">Role</th>
                   <th className="pb-3 px-3">Account Status</th>
-                  <th className="pb-3 px-3">Joined Date</th>
-                  <th className="pb-3 px-3">Wallet Balance</th>
+                  <th className="pb-3 px-3"><button onClick={() => toggleSort("date")}>Joined Date {sortBy === "date" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th>
+                  <th className="pb-3 px-3"><button onClick={() => toggleSort("amount")}>Wallet Balance {sortBy === "amount" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th>
                   <th className="pb-3 px-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono">
-                {filteredUsers.map((u) => (
+                {loadingData ? (
+                  Array.from({ length: 4 }, (_, index) => <tr key={index}><td colSpan={6} className="py-4"><div className="h-5 animate-pulse rounded bg-slate-800/70" /></td></tr>)
+                ) : usersPage.length === 0 ? (
+                  <tr><td colSpan={6} className="py-12 text-center"><div className="mx-auto max-w-sm rounded-2xl border border-dashed border-slate-700 p-6"><p className="text-sm font-bold text-slate-300">No users found</p><p className="mt-1 text-xs text-slate-500">Try another search term.</p></div></td></tr>
+                ) : usersPage.map((u) => (
                   <tr key={u.id} className="hover:bg-slate-800/40">
                     <td className="py-3.5 px-3 text-white font-sans">{u.email}</td>
                     <td className="py-3.5 px-3">
@@ -1173,6 +1284,15 @@ export default function AdminDashboard() {
                       <button onClick={() => setSelectedUser(u)} className="px-3 py-1 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-glow-violet">
                         Adjust Balance
                       </button>
+
+                      {(u.role === "USER" || u.role === "ADMIN") && (
+                        <button
+                          onClick={() => handleUpdateUserRole(u)}
+                          className={`px-3 py-1 rounded-xl font-bold text-xs ${u.role === "USER" ? "bg-indigo-600/30 text-indigo-200 hover:bg-indigo-600/60" : "bg-amber-600/30 text-amber-200 hover:bg-amber-600/60"}`}
+                        >
+                          {u.role === "USER" ? "Promote to Admin" : "Demote to User"}
+                        </button>
+                      )}
 
                       {u.role !== "ADMIN" && u.role !== "SUPER_ADMIN" && (
                         <>
@@ -1194,6 +1314,7 @@ export default function AdminDashboard() {
               </tbody>
             </table>
           </div>
+          {renderPagination(filteredUsers.length)}
         </div>
       )}
 
@@ -1909,6 +2030,35 @@ export default function AdminDashboard() {
           </div>
         </div>
       )}
-    </div>
+      </div>
+      {toast && (
+        <div
+          role="status"
+          className={`fixed bottom-5 right-5 z-[70] max-w-sm rounded-2xl border px-4 py-3 text-xs font-bold shadow-2xl ${
+            toast.tone === "success"
+              ? "border-emerald-500/30 bg-slate-900 text-emerald-200 shadow-glow-green"
+              : "border-red-500/30 bg-slate-900 text-red-200 shadow-glow-red"
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+      {confirmMessage && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+          <section role="dialog" aria-modal="true" aria-labelledby="admin-confirm-title" className="glass-panel w-full max-w-md rounded-2xl border-purple-500/30 p-6 shadow-2xl">
+            <h2 id="admin-confirm-title" className="text-base font-black text-white">Confirm administrator action</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-300">{confirmMessage}</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => resolveConfirmation(false)} className="rounded-xl border border-slate-700 px-4 py-2.5 text-xs font-bold text-slate-300 transition hover:bg-slate-800">
+                Cancel
+              </button>
+              <button type="button" onClick={() => resolveConfirmation(true)} className="rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 px-4 py-2.5 text-xs font-black text-white shadow-glow-violet transition hover:from-purple-500 hover:to-indigo-500">
+                Confirm
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+    </AdminDashboardFrame>
   );
 }

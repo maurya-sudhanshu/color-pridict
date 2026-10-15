@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
-    await requireAdmin(req);
+    await requireAdmin(req, "VIEW");
 
     const logs = await prisma.auditLog.findMany({
       orderBy: { createdAt: "desc" },

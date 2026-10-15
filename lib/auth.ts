@@ -32,13 +32,7 @@ export function verifyToken(token: string): TokenPayload | null {
   }
 }
 
-export async function getUserFromRequest(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  const cookieToken = req.cookies.get("token")?.value;
-  const token = authHeader?.replace("Bearer ", "") || cookieToken;
-
-  if (!token) return null;
-
+export async function getUserFromToken(token: string) {
   const payload = verifyToken(token);
   if (!payload) return null;
 
@@ -55,6 +49,15 @@ export async function getUserFromRequest(req: NextRequest) {
   };
 }
 
+export async function getUserFromRequest(req: NextRequest) {
+  const authHeader = req.headers.get("authorization");
+  const cookieToken = req.cookies.get("token")?.value;
+  const token = authHeader?.replace("Bearer ", "") || cookieToken;
+
+  if (!token) return null;
+  return getUserFromToken(token);
+}
+
 export async function requireAuth(req: NextRequest) {
   const user = await getUserFromRequest(req);
   if (!user) {
@@ -66,18 +69,40 @@ export async function requireAuth(req: NextRequest) {
   return user;
 }
 
+export async function requireRole(req: NextRequest, role: "admin" | "user") {
+  if (role === "admin" && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    const origin = req.headers.get("origin");
+    const referer = req.headers.get("referer");
+    const requestOrigin = new URL(req.url).origin;
+    let suppliedOrigin: string | null = origin;
+
+    if (!suppliedOrigin && referer) {
+      suppliedOrigin = new URL(referer).origin;
+    }
+
+    if (!suppliedOrigin || suppliedOrigin !== requestOrigin) {
+      throw new Error("CSRF validation failed");
+    }
+  }
+
+  const user = await requireAuth(req);
+
+  if (role === "user" && user.role !== "USER") {
+    throw new Error("FORBIDDEN_USER_ONLY");
+  }
+
+  if (role === "admin" && !["ADMIN", "SUPER_ADMIN", "SUB_ADMIN"].includes(user.role)) {
+    throw new Error("FORBIDDEN_ADMIN_ONLY");
+  }
+
+  return user;
+}
+
 export async function requireAdmin(
   req: NextRequest,
   action?: "CREATE" | "VIEW" | "UPDATE" | "DELETE"
 ) {
-  const user = await getUserFromRequest(req);
-  if (!user) {
-    throw new Error("UNAUTHORIZED");
-  }
-
-  if (user.isBlocked) {
-    throw new Error("Your admin account has been suspended.");
-  }
+  const user = await requireRole(req, "admin");
 
   // Super Admin / Main Admin has unrestricted full access
   if (user.role === "ADMIN" || user.role === "SUPER_ADMIN") {
